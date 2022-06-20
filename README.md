@@ -8,9 +8,9 @@ This repository contains the script files needed to deploy and run *TezEdge's* o
 
 # Operations fuzzer
 
-This fuzzer is implemented as a Python script that makes use of the [Tezos' Python Execution and Testing Environment](https://tezos.gitlab.io/developer/python_testing_framework.html) and allows to craft and inject random (protocol-12, *Ithaca*) operations.
+This fuzzer is implemented as a Python script that makes use of the [Tezos' Python Execution and Testing Environment](https://tezos.gitlab.io/developer/python_testing_framework.html) and allows to craft and inject random (protocol-13, *Jakarta*) operations.
 
-The fuzzer runs four nodes and four bakers in [sandboxed mode](https://tezos.gitlab.io/developer/python_testing_framework.html#a-simple-sandbox-scenario), this is the minum required to bake new blocks and do progress. Bootstrap accounts `bootstrap2-5` are used by bakers, and `bootstrap1` is used as source for the randomly generated operations, before injecting any operations protocol *Ithaca* is activated.
+The fuzzer runs four nodes and four bakers in [sandboxed mode](https://tezos.gitlab.io/developer/python_testing_framework.html#a-simple-sandbox-scenario), this is the minum required to bake new blocks and do progress. Bootstrap accounts `bootstrap2-5` are used by bakers, and `bootstrap1` is used as source for the randomly generated operations, before injecting any operations protocol *Jakarta* is activated.
 
 On every iteration the fuzzer will:
 - Request via RPC the current block's *level*.

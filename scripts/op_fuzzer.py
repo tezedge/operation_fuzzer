@@ -1,10 +1,11 @@
 # Copyright(c) SimpleStaking, Viable Systems and Tezedge Contributors
 # SPDX-License-Identifier: MIT
 
+import string
 import os
 import time
 import signal
-from typing import Counter
+from typing import Counter, Sequence
 import psutil
 import random as r
 import construct as c
@@ -26,13 +27,7 @@ LEVEL = 0
 COUNTER = 0
 CHAIN_ID = 'main'
 BLOCK_ID = 'head'
-BAKE = False
-
-
-def timeout_handler(signum, frame):
-    global BAKE
-    BAKE = True
-    # raise TimeoutError
+CONTRACTS = None
 
 
 def sign(data: bytes) -> bytes:
@@ -41,24 +36,49 @@ def sign(data: bytes) -> bytes:
     return sig_key.sign(hash.digest())
 
 
-def rand_elems(subc, min_count=1, max_count=128):
+def rand_elems(subc, min_count=1, max_count=10):
     return lambda _: [None] * r.randint(min_count, max_count)
 
 
-def relems_greedy(elem, min_count=1, max_count=128):
+def relems_greedy(elem, min_count=1, max_count=10):
     return c.Default(c.GreedyRange(elem), rand_elems(elem, min_count, max_count))
 
 
+def weighted_choice(choices):
+    return r.choices(*list(zip(*choices)))[0]
+
+
 def rand_operation_tag():
-    return lambda _: r.choice(
-        [
-            1, 2, 3, 4, 5, 6, 7, 17, 20, 21,
-            107, 108, 109, 110, 111, 112
-        ])
-
-
-def rand_entrypoint():
-    return lambda _: r.choice([0, 1, 2, 3, 4, 255])
+    return lambda _: weighted_choice([
+        (1, 0.1),
+        (2, 0.1),
+        (3, 0.1),
+        (4, 0.1),
+        (5, 0.1),
+        (6, 0.1),
+        (7, 0.1),
+        (17, 0.1),
+        (20, 0.1),
+        (21, 0.1),
+        (107, 0.1),
+        (108, 0.9),
+        (109, 0.9),
+        (110, 0.1),
+        (111, 0.1),
+        (112, 0.1),
+        (150, 0.1),
+        (152, 0.1),
+        (152, 0.1),
+        (153, 0.1),
+        (154, 0.1),
+        (155, 0.1),
+        (157, 0.1),
+        (158, 0.1),
+        (200, 0.1),
+        (201, 0.1),
+        (202, 0.1),
+        (203, 0.1)
+    ])
 
 
 def rand_contract_id():
@@ -66,7 +86,7 @@ def rand_contract_id():
 
 
 def rand_bool():
-    return lambda _: r.choice([0, 255])
+    return lambda _: weighted_choice([(0, 0.1), (255, 0.9)])
 
 
 def rwrap(subc):
@@ -121,7 +141,7 @@ def rbranch():
     return c.Default(c.Bytes(32), branch)
 
 
-def rbytes_greedy(min=1, max=128):
+def rbytes_greedy(min=1, max=20):
     return c.Default(
         c.GreedyBytes,
         lambda _: r.randbytes(r.randint(min, max))
@@ -132,7 +152,6 @@ def rbool():
     return c.Default(c.Int8ub, rand_bool())
 
 
-# 012-Psithaca.inlined.endorsement_mempool.contents (43 bytes, 8-bit tag)
 endorsement_mempool_contents = c.Struct(
     'tag' / c.Const(21, c.Int8ub),
     'slot' / ruint(16),
@@ -141,7 +160,6 @@ endorsement_mempool_contents = c.Struct(
     'block_payload_hash' / rbytes(32, prefix=b'\001\106\242')
 )
 
-# 012-Psithaca.inlined.endorsement
 inlined_endorsement = c.Struct(
     'branch' / rbranch(),
     'operations' / endorsement_mempool_contents,
@@ -170,7 +188,6 @@ fitness_elem = c.Struct(
     'round' / c.Prefixed(c.Int32ub, rsint(32))
 )
 
-# 012-Psithaca.block_header.alpha.full_header
 full_header = c.Struct(
     'level' / c.Default(c.Int32sl, lambda _: LEVEL),
     'proto' / ruint(8),
@@ -223,7 +240,6 @@ Ballot = c.Struct(
     'ballot' / rsint(8, min=0, max=2)
 )
 
-# 012-Psithaca.inlined.preendorsement.contents (43 bytes, 8-bit tag)
 preendorsement_contents = c.Struct(
     'tag' / c.Const(20, c.Int8ub),
     'slot' / ruint(16),
@@ -232,7 +248,6 @@ preendorsement_contents = c.Struct(
     'block_payload_hash' / rbytes(32)
 )
 
-# 012-Psithaca.inlined.preendorsement
 inlined_preendorsement = c.Struct(
     'branch' / rbranch(),
     'operations' / preendorsement_contents,
@@ -287,7 +302,6 @@ Reveal = c.Struct(
 )
 
 
-# 012-Psithaca.contract_id (22 bytes, 8-bit tag)
 contract_id = c.Struct(
     'tag' / c.Default(c.Int8ub, rand_contract_id()),
     'operation' / c.Switch(
@@ -299,11 +313,34 @@ contract_id = c.Struct(
     )
 )
 
-# 012-Psithaca.entrypoint (Determined from data, 8-bit tag)
+
+def rchars_greedy(min=1, max=10):
+    return c.Default(
+        c.GreedyBytes,
+        lambda _: b''.join(r.choice(string.printable).encode()
+                           for _ in range(r.randint(min, max)))
+    )
+
+
+def rannot_greedy(min=1, max=10, prefix='@:%'):
+    chars = string.ascii_letters + string.digits + '@%_.'
+    return c.Default(
+        c.GreedyBytes,
+        lambda _: r.choice(prefix).encode() + b''.join(r.choice(chars).encode()
+                                                       for _ in range(r.randint(min, max-1)))
+    )
+
+
+string_expr = c.Prefixed(c.Int32ub, rchars_greedy())
+annot_expr = c.Prefixed(c.Int32ub, rannot_greedy())
+
+
+entrypoint_types = [0, 1, 2, 3, 4]  # , 255]
+
 entrypoint = c.Struct(
-    'tag' / c.Default(c.Int8ub, rand_entrypoint()),
+    'tag' / c.Default(c.Int8ub, lambda _: r.choice(entrypoint_types)),
     'field0' / c.If(c.this.tag == 255,
-                    c.Prefixed(c.Int8ub, rbytes_greedy(max=31)))
+                    c.Prefixed(c.Int8ub, rannot_greedy(prefix='%')))
 )
 
 # string_enum, int size based on enum len
@@ -315,79 +352,93 @@ prim_0_args_no_annots = c.Struct(
 
 prim_0_args_some_annots = c.Struct(
     'prim' / michelson_v1_primitive,
-    'annots' / c.Prefixed(c.Int32ub, rbytes_greedy(min=1, max=255))
+    'annots' / annot_expr
 )
 
 prim_1_arg_no_annots = c.Struct(
     'prim' / michelson_v1_primitive,
-    'arg' / rwrap(c.LazyBound(lambda: micheline_expr))
+    'arg' / rwrap(c.LazyBound(lambda: micheline_expr_no_seq))
 )
 
 prim_1_args_some_annots = c.Struct(
     'prim' / michelson_v1_primitive,
-    'arg' / rwrap(c.LazyBound(lambda: micheline_expr)),
-    'annots' / c.Prefixed(c.Int32ub, rbytes_greedy(min=1, max=255))
+    'arg' / rwrap(c.LazyBound(lambda: micheline_expr_no_seq)),
+    'annots' / annot_expr
 )
 
 prim_2_arg_no_annots = c.Struct(
     'prim' / michelson_v1_primitive,
-    'arg1' / rwrap(c.LazyBound(lambda: micheline_expr)),
-    'arg2' / rwrap(c.LazyBound(lambda: micheline_expr))
+    'arg1' / rwrap(c.LazyBound(lambda: micheline_expr_no_seq)),
+    'arg2' / rwrap(c.LazyBound(lambda: micheline_expr_no_seq))
 )
 
 prim_2_arg_some_annots = c.Struct(
     'prim' / michelson_v1_primitive,
-    'arg1' / rwrap(c.LazyBound(lambda: micheline_expr)),
-    'arg2' / rwrap(c.LazyBound(lambda: micheline_expr)),
-    'annots' / c.Prefixed(c.Int32ub, rbytes_greedy(min=1, max=255))
+    'arg1' / rwrap(c.LazyBound(lambda: micheline_expr_no_seq)),
+    'arg2' / rwrap(c.LazyBound(lambda: micheline_expr_no_seq)),
+    'annots' / annot_expr
 )
 
-code = c.Struct(
-    'tag' / c.Const(1, c.Int8ub),
-    'bytes' / c.Prefixed(c.Int32ub, rbytes_greedy())
+node = c.Switch(
+    c.this.tag,
+    {
+        # integer
+        0: N_t,
+        # string
+        1: c.Prefixed(c.Int32ub, rchars_greedy()),
+        # sequence
+        2: c.Prefixed(c.Int32ub, relems_greedy(rwrap(c.LazyBound(lambda: micheline_expr_no_seq)))),
+        # primitive application
+        3: prim_0_args_no_annots,
+        4: prim_0_args_some_annots,
+        5: prim_1_arg_no_annots,
+        6: prim_1_args_some_annots,
+        7: prim_2_arg_no_annots,
+        8: prim_2_arg_some_annots,
+        # bytes
+        10: c.Prefixed(c.Int32ub, rbytes_greedy(min=1, max=10))
+    }
 )
 
+# version to prevent excessive recursion
+micheline_expr_no_seq = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([
+                          (0, 0.5),
+                          (1, 0.5),
+                          (2, 0.1),
+                          (3, 0.9),
+                          (4, 0.9),
+                          # (5, 0.1),
+                          # (6, 0.5),
+                          # (7, 0.5),
+                          # (8, 0.5),
+                          (10, 0.5),
+                      ])),
+    'node' / node
+)
 
 micheline_expr = c.Struct(
-    'tag' / c.Default(c.Int8ub, lambda _: r.choice([0, 1, 2, 9])),
-    'expr' / c.Switch(
-        c.this.tag,
-        {
-            0: N_t,  # int_encoding
-            1: c.Prefixed(c.Int32ub, rbytes_greedy()),  # string_encoding
-            # seq_encoding = list(expr_encoding)
-            2: c.Prefixed(c.Int32ub, relems_greedy(rwrap(c.LazyBound(lambda: micheline_expr)), max_count=2)),
-            # 3: prim_0_args_no_annots,
-            # 4: prim_0_args_some_annots,
-            # 5: prim_1_arg_no_annots,
-            # 6: prim_1_args_some_annots,
-            # 7: prim_2_arg_no_annots,
-            # 8: prim_2_arg_some_annots,
-            # 9: rwrap(c.LazyBound(lambda: micheline_expr)),  # expr_encoding
-            # 10: rbytes_greedy(min=1, max=255)  # bytes_encoding (TODO: size?)
-        }
-    )
-)
-
-params = c.Struct(
-    'tag' / ruint(8, min=3, max=8),
-    'expr' / c.Switch(
-        c.this.tag,
-        {
-            3: prim_0_args_no_annots,
-            4: prim_0_args_some_annots,
-            5: prim_1_arg_no_annots,
-            6: prim_1_args_some_annots,
-            7: prim_2_arg_no_annots,
-            8: prim_2_arg_some_annots,
-        }
-    )
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([
+                          (0, 0.1),
+                          (1, 0.1),
+                          (2, 0.9),
+                          (3, 0.1),
+                          (4, 0.1),
+                          (5, 0.1),
+                          (6, 0.1),
+                          (7, 0.1),
+                          (8, 0.1),
+                          (10, 0.1),
+                      ])),
+    'node' / node
 )
 
 # X_0
 X_0 = c.Struct(
     'entrypoint' / entrypoint,
-    'value' / c.Prefixed(c.Int32ub, params)
+    'value' / c.Prefixed(c.Int32ub, micheline_expr)
 )
 
 
@@ -404,10 +455,9 @@ Transaction = c.Struct(
     'parameters' / c.If(c.this.has_parameters != 0, X_0)
 )
 
-# 012-Psithaca.scripted.contracts
 scripted_contracts = c.Struct(
-    'code' / c.Prefixed(c.Int32ub, code),
-    'storage' / c.Prefixed(c.Int32ub, code)
+    'code' / c.Prefixed(c.Int32ub, micheline_expr),
+    'storage' / c.Prefixed(c.Int32ub, micheline_expr)
 )
 
 # Origination (tag 109)
@@ -456,8 +506,343 @@ Set_deposits_limit = c.Struct(
 )
 
 
-# 012-Psithaca.operation.alpha.contents (Determined from data, 8-bit tag)
-Ithaca_operation_contents = c.Struct(
+# Tx_rollup_origination (tag 150)
+Tx_rollup_origination = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+)
+
+
+# Tx_rollup_submit_batch (tag 151)
+Tx_rollup_submit_batch = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+    'content' / c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'has_burn_limit' / rbool(),
+    'burn_limit' / c.If(c.this.has_burn_limit != 0, N_t)
+)
+
+X_135 = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([(0, 0.5), (1, 0.5)])),
+    'Commitment_hash' / c.If(c.this.tag == 1, rbytes(32))
+)
+
+X_134 = c.Struct(
+    'level' / c.Default(c.Int32sl, lambda _: LEVEL),
+    'messages' / c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'predecessor' / X_135,
+    'inbox_merkle_root' / rbytes(32)
+)
+
+# Tx_rollup_commit (tag 152)
+Tx_rollup_commit = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+    'commitment' / c.Prefixed(c.Int32ub, X_134),
+)
+
+
+# Tx_rollup_return_bond (tag 153)
+Tx_rollup_return_bond = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+)
+
+# Tx_rollup_finalize_commitment (tag 154)
+Tx_rollup_finalize_commitment = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+)
+
+
+# Tx_rollup_remove_commitment (tag 155)
+Tx_rollup_remove_commitment = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+)
+
+X_6 = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([
+                          (0, 0.5),
+                          (1, 0.5),
+                          (2, 0.5),
+                          (3, 0.5)
+                      ])),
+    'type' / c.Switch(
+        c.this.tag,
+        {
+            0: ruint(8),
+            1: ruint(16),
+            2: ruint(32),
+            3: ruint(64)
+        }
+    )
+)
+
+X_5 = c.Struct(
+    'sender' / rbytes(21),
+    'destination' / rbytes(20),
+    'ticket_hash' / rbytes(32),
+    'amount' / X_6
+)
+
+X_7 = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([(0, 0.5), (1, 0.5)])),
+    'type' / c.Switch(
+        c.this.tag,
+        {
+            # Batch
+            0: c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+            # Deposit
+            1: X_5,
+        }
+    )
+)
+
+X_127 = rbytes(32)
+
+X_119 = c.Sequence(rbytes(32), rbytes(32))
+
+X_114 = c.Prefixed(c.Int8ub, rbytes_greedy(min=4, max=64))
+
+X_115 = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([(0, 0.5), (1, 0.5)])),
+    'context_hash' / rbytes(32)
+)
+
+X_14 = c.Sequence(X_114, X_115)
+
+X_132 = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([
+                          (0, 0.5),
+                          (1, 0.5),
+                          (2, 0.5),
+                          (3, 0.5),
+                          (4, 0.5),
+                          (5, 0.5),
+                          (6, 0.5),
+                          (7, 0.5),
+                          (8, 0.5),
+                          (9, 0.5),
+                          (10, 0.5),
+                          (11, 0.5),
+                          (12, 0.5),
+                          (13, 0.5),
+                          (14, 0.5),
+                          (15, 0.5),
+                          (128, 0.5),
+                          (129, 0.5),
+                          (130, 0.5),
+                          (131, 0.5),
+                          (192, 0.5),
+                          (193, 0.5),
+                          (195, 0.5),
+                          (224, 0.5),
+                          (225, 0.5),
+                          (226, 0.5),
+                          (227, 0.5)
+                      ])),
+    'type' / c.Switch(
+        c.this.tag,
+        {
+            0: ruint(8),
+            1: ruint(16),
+            2: rsint(32),
+            3: rsint(64),
+            4: c.Sequence(ruint(8), X_127),
+            5: c.Sequence(ruint(16), X_127),
+            6: c.Sequence(rsint(32), X_127),
+            7: c.Sequence(rsint(64), X_127),
+            8: c.Sequence(ruint(8), X_127),
+            9: c.Sequence(ruint(16), X_127),
+            10: c.Sequence(rsint(32), X_127),
+            11: c.Sequence(rsint(64), X_127),
+            12: c.Sequence(ruint(8), X_119),
+            13: c.Sequence(ruint(16), X_119),
+            14: c.Sequence(rsint(32), X_119),
+            15: c.Sequence(rsint(64), X_119),
+            129: X_14,
+            130: c.Sequence(X_14, X_14),
+            131: c.Prefixed(c.Int32ub, relems_greedy(X_14)),
+            192: c.Prefixed(c.Int8ub, rbytes_greedy(min=4, max=64)),
+            193: c.Prefixed(c.Int16ub, rbytes_greedy(min=4, max=64)),
+            195: c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+            224: c.Sequence(rsint(8), X_114, rbytes(32)),
+            225: c.Sequence(rsint(16), X_114, rbytes(32)),
+            226: c.Sequence(rsint(32), X_114, rbytes(32)),
+            227: c.Sequence(rsint(64), X_114, rbytes(32)),
+        }
+    )
+)
+
+
+X_9 = c.Prefixed(c.Int32ub, relems_greedy(X_132))
+
+X_133 = c.Struct(
+    'tag' / c.Default(c.Int8ub,
+                      lambda _: weighted_choice([
+                          (0, 0.5),
+                          (1, 0.5),
+                          (2, 0.5),
+                          (3, 0.5)
+                      ])),
+    'data' / c.Sequence(rsint(16), rbytes(32), rbytes(32), X_9)
+)
+
+X_8 = c.Struct(
+    'context_hash' / rbytes(32),
+    'withdraw_list_hash' / rbytes(32),
+)
+
+# Tx_rollup_rejection (tag 156)
+Tx_rollup_rejection = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+    'level' / c.Default(c.Int32sl, lambda _: LEVEL),
+    'message' / X_7,
+    'message_position' / N_t,
+    'message_path' / c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'message_result_hash' / rbytes(32),
+    'message_result_path' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'previous_message_result' / X_8,
+    'previous_message_result_path' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'proof' / X_133
+)
+
+X_3 = c.Struct(
+    'contents' / c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'ty' / c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'ticketer' / contract_id,
+    'amount' / X_6,
+    'claimer' / public_key_hash
+)
+
+
+Tx_rollup_dispatch_tickets = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup' / rbytes(20),
+    'level' / c.Default(c.Int32sl, lambda _: LEVEL),
+    'context_hash' / rbytes(32),
+    'message_index' / rsint(32),
+    'message_result_path' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'tickets_info' / c.Prefixed(c.Int32ub, relems_greedy(X_3)),
+)
+
+Transfer_ticket = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'ticket_contents' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'ticket_ty' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'ticket_ticketer' / contract_id,
+    'ticket_amount' / N_t,
+    'destination' / contract_id,
+    'entrypoint' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+)
+
+X_2 = ruint(16)
+
+Sc_rollup_originate = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'kind' / X_2,
+    'boot_sector' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+)
+
+X_1 = c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64))
+
+Sc_rollup_add_messages = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup_address' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'message' / c.Prefixed(c.Int32ub, relems_greedy(X_1)),
+)
+
+Sc_rollup_cement = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup_address' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'commitment' / rbytes(32)
+)
+
+X_0_ = c.Struct(
+    'compressed_state' / rbytes(32),
+    'inbox_level' / rsint(32),
+    'predecessor' / rbytes(32),
+    'number_of_messages' / rsint(32),
+    'number_of_ticks' / rsint(32),
+)
+
+
+Sc_rollup_publish = c.Struct(
+    'source' / public_key_hash,
+    'fee' / N_t,
+    'counter' / c.Default(c.Int8ub, lambda _: COUNTER + 1),
+    'gas_limit' / N_t,
+    'storage_limit' / N_t,
+    'rollup_address' /
+    c.Prefixed(c.Int32ub, rbytes_greedy(min=4, max=64)),
+    'commitment' / X_0_
+)
+
+
+operation_contents = c.Struct(
     'tag' / c.Default(c.Int8ub, rand_operation_tag()),
     'operation' / c.Switch(
         c.this.tag,
@@ -477,24 +862,30 @@ Ithaca_operation_contents = c.Struct(
             109: rwrap(Origination),
             110: rwrap(Delegation),
             111: rwrap(Register_global_constant),
-            112: rwrap(Set_deposits_limit)
+            112: rwrap(Set_deposits_limit),
+            150: rwrap(Tx_rollup_origination),
+            152: rwrap(Tx_rollup_submit_batch),
+            152: rwrap(Tx_rollup_commit),
+            153: rwrap(Tx_rollup_return_bond),
+            154: rwrap(Tx_rollup_finalize_commitment),
+            155: rwrap(Tx_rollup_remove_commitment),
+            157: rwrap(Tx_rollup_dispatch_tickets),
+            158: rwrap(Transfer_ticket),
+            200: rwrap(Sc_rollup_originate),
+            201: rwrap(Sc_rollup_add_messages),
+            202: rwrap(Sc_rollup_cement),
+            203: rwrap(Sc_rollup_publish),
+
         }
     )
 )
 
 
-"""
-WARNING: *contents* is defined as a sequence of *Ithaca_operation_contents*,
-but there is no size prefix. Without knowing the size of an operation there
-doesn't seem to be a sound way of parsing it. Usually that size is obtained
-from the upper transport layer. ATM this code will be used just for encoding
-so this issue can be ignored.
-"""
-Ithaca_operation = c.Struct(
+operation = c.Struct(
     'operation' / c.RawCopy(
         c.Struct(
             'branch' / rbranch(),
-            'contents' / relems_greedy(Ithaca_operation_contents, max_count=2)
+            'contents' / relems_greedy(operation_contents, max_count=2)
         )),
     'signature' / c.Checksum(c.Bytes(64), sign, c.this.operation.data)
 )
@@ -508,68 +899,79 @@ def dump_coverage():
         if 'main' == psutil.Process(tid).name():
             print(f'Sending signal to OCaml\'s runtime ({tid})...')
             os.kill(tid, signal.SIGUSR2)
-            time.sleep(1)
+            time.sleep(4)
             return report_ocaml.generate_report()
 
     raise
 
 
-@pytest.fixture(scope="class")
+@ pytest.fixture(scope="class")
 def client(sandbox):
     sandbox.add_node(0, params=constants.NODE_PARAMS)
+    time.sleep(2)
     sandbox.add_node(1, params=constants.NODE_PARAMS)
+    time.sleep(2)
     sandbox.add_node(2, params=constants.NODE_PARAMS)
+    time.sleep(2)
     sandbox.add_node(3, params=constants.NODE_PARAMS)
+    time.sleep(2)
     sandbox.add_baker(
         0,
         ['bootstrap2'],
-        proto=constants.ITHACA_DAEMON,
+        proto=constants.JAKARTA_DAEMON,
     )
+    time.sleep(2)
     sandbox.add_baker(
         1,
         ['bootstrap3'],
-        proto=constants.ITHACA_DAEMON,
+        proto=constants.JAKARTA_DAEMON,
     )
+    time.sleep(2)
     sandbox.add_baker(
         2,
         ['bootstrap4'],
-        proto=constants.ITHACA_DAEMON,
+        proto=constants.JAKARTA_DAEMON,
     )
+    time.sleep(2)
     sandbox.add_baker(
         3,
         ['bootstrap5'],
-        proto=constants.ITHACA_DAEMON,
+        proto=constants.JAKARTA_DAEMON,
     )
-    time.sleep(20)
+    time.sleep(10)
     client = sandbox.client(0)
-    parameters = constants.ITHACA_PARAMETERS
-    client.activate_protocol_json(constants.ITHACA, parameters)
+    parameters = constants.JAKARTA_PARAMETERS
+    parameters['hard_gas_limit_per_operation'] = '104000000000'
+    parameters['hard_gas_limit_per_block'] = '5200000000000'
+    parameters['hard_storage_limit_per_operation'] = '600000000000'
+    client.activate_protocol_json(constants.JAKARTA, parameters)
     yield client
 
 
-@pytest.mark.incremental
+@ pytest.mark.incremental
 class TestFuzz:
     def test_fuzz(self, client):
-        signal.signal(signal.SIGALRM, timeout_handler)
-        branch_b58 = client.rpc('get', 'chains/main/blocks/head/hash')
         global BRANCH
         global COUNTER
         global LEVEL
-        BRANCH = base58check.b58decode(branch_b58.encode())[2:-4]
+        global CONTRACTS
         LEVEL = 0
         iterations = 1
         cov_per = None
         covered_all = None
         total_all = None
+        time.sleep(10)
 
         while True:
-            signed_op = Ithaca_operation.build(None)
+            signed_op = operation.build(None)
 
             try:
                 block = client.rpc(
                     'get',
                     f'/chains/{CHAIN_ID}/blocks/{BLOCK_ID}'
                 )
+                branch = block['hash']
+                BRANCH = base58check.b58decode(branch.encode())[2:-4]
                 LEVEL = int(block['header']['level'])
                 counter = client.rpc(
                     'get',
@@ -577,9 +979,14 @@ class TestFuzz:
                     f'context/contracts/{CONTRACT_ID}/counter',
                 )
                 COUNTER = int(counter)
+                # CONTRACTS = client.rpc(
+                #    'get',
+                #    f'/chains/{CHAIN_ID}/blocks/{BLOCK_ID}/'
+                #    f'context/contracts'
+                # )
 
                 op_hash = client.rpc(
-                    'post', f'/injection/operation?async={ASYNC}', signed_op.hex())
+                    'post', f'/injection/operation?async={ASYNC}', signed_op.hex(), params=['-l'])
                 # print(op_hash)
 
                 if cov_per is not None:
@@ -587,7 +994,7 @@ class TestFuzz:
                         f'[COV] {cov_per:.1f}% {covered_all}/{total_all}')
 
             except subprocess.CalledProcessError:
-                pass
+                raise
 
             iterations += 1
 

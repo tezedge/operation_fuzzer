@@ -172,7 +172,14 @@ kcov_html_template = """
 
 def read_coverage():
     ret = []
-    path = next(pathlib.Path('/tezos/tests_python/').glob('*.coverage'))
+
+    while True:
+        try:
+            path = next(pathlib.Path(
+                '/tezos/tests_python/').glob('*.coverage'))
+            break
+        except:
+            pass
 
     with open(path, 'r') as f:
         cov_info = f.read()
@@ -353,7 +360,7 @@ def generate_report():
     ]
 
     files = [(file, offsets) for (file, offsets) in files.items()
-             if file.startswith('src/proto_012') or
+             if file.startswith('src/proto_013') or
              not any(file.startswith(x) for x in filter_list)]
 
     for (file, offsets) in sorted(files, key=lambda x: x[0]):
